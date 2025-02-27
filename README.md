@@ -1,4 +1,53 @@
-# SWE-Lancer
+# Get your agent to work 50X faster by running SWE-Lancer on Morph Cloud
+
+<p align="center">
+  <img src="./images/swelancer-splash.png" alt="Morph Cloud Integration" width="100%" style="max-width: 100%; height: auto;" />
+</p>
+
+## Accelerated Evaluation with Morph Cloud
+
+This fork enhances SWELancer with Morph Cloud integration to significantly reduce the time to first agent action (up to 50x faster) when running evaluations. Morph Cloud's snapshotting capabilities allow agents to drop directly into the exact task state needed, bypassing the lengthy setup process for tasks you've run before.
+
+[Apply for early access here](https://docs.google.com/forms/d/1F8JeJEJWwP5ywfmGN_N-r3MBNHVzry7k1Dg_2YEex28)
+
+### Key Benefits
+- Reduces setup time from ~550 seconds to ~10 seconds for IC SWE tasks
+- Reduces setup time from ~30 seconds to ~10 seconds for Manager tasks
+- Drastically improves iteration cycles for researchers and developers
+- Handles Docker build for you
+
+### Getting Started with Morph Cloud
+
+To use Morph Cloud's accelerated evaluation:
+
+```bash
+# Complete basic setup (skip Docker build step)
+uv sync
+source .venv/bin/activate
+for proj in nanoeval alcatraz nanoeval_alcatraz; do
+  uv pip install -e project/"$proj"
+done
+
+# Install Morph Cloud and set API key
+uv pip install morphcloud
+export MORPH_API_KEY=your_api_key_here
+
+# Run with Morph Cloud enabled
+uv run python run_swelancer.py --use_morph
+```
+
+### How It Works
+
+The Morph Cloud integration:
+1. Creates a VM to build the Docker image, and run the container setup for a given issue
+1. Automatically creates snapshots of the container on each initial issue run
+3. Reuses these snapshots in subsequent runs to bypass setup time
+4. Maintains full compatibility with the original evaluation framework
+
+### Contact Us
+Pre-built snapshots are available to select early users of [Morph Cloud](https://cloud.morph.so/developers) — [apply for early access](https://docs.google.com/forms/d/1F8JeJEJWwP5ywfmGN_N-r3MBNHVzry7k1Dg_2YEex28) to learn more.
+
+## SWE-Lancer
 
 This repo contains the dataset and code for the paper ["SWE-Lancer: Can Frontier LLMs Earn $1 Million from Real-World Freelance Software Engineering?"](https://www.openai.com/index/swe-lancer/).
 
