@@ -135,6 +135,10 @@ The Morph Cloud integration:
 3. Reuses these snapshots in subsequent runs to bypass setup time
 4. Maintains full compatibility with the original evaluation framework
 
+### Contact Us
+Pre-built snapshots are available to select early users of Morph Cloud. 
+
+Join the early beta: https://cloud.morph.so/developers
 
 ## Running at Scale
 
