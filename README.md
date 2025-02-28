@@ -93,13 +93,13 @@ uv run python run_swelancer.py
 
 You should immediately see logging output as the container gets set up and the tasks are loaded, which may take several minutes. You can adjust the model, concurrency, recording, and other parameters in `run_swelancer.py`.
 
-## Accelerated Evaluation with MorphCloud
+## Accelerated Evaluation with Morph Cloud
 
 <p align="center">
-  <img src="./images/swelancer-morphcloud.png" alt="MorphCloud Integration" width="700" />
+  <img src="./images/swelancer-morphcloud.png" alt="Morph Cloud Integration" width="700" />
 </p>
 
-This fork enhances SWE-Lancer with MorphCloud integration to significantly reduce the time to first agent action (up to 50x faster) when running evaluations. MorphCloud's snapshotting capabilities allow agents to drop directly into the exact runtime state needed, bypassing the lengthy setup process for tasks you've run before.
+This fork enhances SWELancer with Morph Cloud integration to significantly reduce the time to first agent action (up to 50x faster) when running evaluations. Morph Cloud's snapshotting capabilities allow agents to drop directly into the exact task state needed, bypassing the lengthy setup process for tasks you've run before.
 
 ### Key Benefits
 - Reduces setup time from ~550 seconds to ~10 seconds for IC SWE tasks
@@ -107,9 +107,9 @@ This fork enhances SWE-Lancer with MorphCloud integration to significantly reduc
 - Drastically improves iteration cycles for researchers and developers
 - Handles Docker build for you
 
-### Getting Started with MorphCloud
+### Getting Started with Morph Cloud
 
-To use MorphCloud's accelerated evaluation:
+To use Morph Cloud's accelerated evaluation:
 
 ```bash
 # Complete basic setup (skip Docker build step)
@@ -119,24 +119,19 @@ for proj in nanoeval alcatraz nanoeval_alcatraz; do
   uv pip install -e project/"$proj"
 done
 
-# Install MorphCloud and set API key
+# Install Morph Cloud and set API key
 uv pip install morphcloud
 export MORPH_API_KEY=your_api_key_here
 
-# Run with MorphCloud enabled
+# Run with Morph Cloud enabled
 uv run python run_swelancer.py --use_morph
-```
-
-You can also limit the number of evaluation tasks with the `--num_tasks` flag:
-```bash
-uv run python run_swelancer.py --use_morph --num_tasks=5
 ```
 
 ### How It Works
 
-The MorphCloud integration:
-1. Uses VM snapshots to preserve complete runtime states
-2. Automatically creates snapshots for each task you run
+The Morph Cloud integration:
+1. Creates a VM to build the Docker image, and run the container setup for a given issue
+1. Automatically creates snapshots of the container on each initial issue run
 3. Reuses these snapshots in subsequent runs to bypass setup time
 4. Maintains full compatibility with the original evaluation framework
 
