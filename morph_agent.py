@@ -1,3 +1,4 @@
+
 import chz
 from nanoeval.solvers.computer_tasks.solver import PythonCodingSolver
 from nanoeval.solvers.computer_tasks.code_execution_interface import ComputerInterface
@@ -19,12 +20,11 @@ from contextlib import asynccontextmanager
 from textwrap import dedent
 from typing import AsyncGenerator, Dict, Optional, Any, List
 
-# Import the MorphCloud client
+# Import the Morph Cloud client
 from morphcloud.api import MorphCloudClient
 
-# OpenAI imports remain the same
-from openai import OpenAI
-import os
+# OpenAI imports using AsyncOpenAI client
+from openai import AsyncOpenAI
 import tiktoken
 
 # Save the original print function for timed logging
@@ -50,8 +50,8 @@ def safe_decode(data):
         return data.decode('utf-8', errors='replace')
     return data
 
-# OpenAI utility functions
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# OpenAI utility functions using the async client
+client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def count_tokens(messages: list[dict[str, Any]], model: str = "gpt-4") -> int:
     """Count the number of tokens in a list of messages."""
@@ -72,10 +72,10 @@ def trim_messages(messages: list[dict[str, Any]], max_tokens: int, model: str = 
         messages.pop(1)
     return messages
 
-def get_model_response(messages: list[dict[str, Any]]) -> str:
+async def get_model_response(messages: list[dict[str, Any]]) -> str:
     messages = trim_messages(messages, 110000)
     
-    chat_completion = client.chat.completions.create(
+    chat_completion = await client.chat.completions.create(
         messages=messages, # type: ignore
         model="gpt-4o",
     )
@@ -105,9 +105,6 @@ def task_to_morph_config(task: ComputerTask) -> "MorphConfig":
             "disk_size": 20480  # 20GB in MB
         }
     )
-
-import asyncio
-import time
 
 async def run_mitmdump_in_container(instance, container_name):
     """Run mitmdump inside the container during initialization"""
@@ -178,13 +175,9 @@ class MorphConfig:
             metadata=self.swelancer_metadata
         )
         
-        if swelancer_snapshots:
-            print(f"Found existing SWELancer snapshot with ID: {swelancer_snapshots[0].id}")
-            snapshot_id = swelancer_snapshots[0].id
-        else:
-            # If no SWELancer snapshot, check for or create a base snapshot
-            print("No existing SWELancer snapshot found, will build image...")
-            snapshot_id = await self._ensure_base_snapshot()
+        # If no SWELancer snapshot, check for or create a base snapshot
+        print("No existing SWELancer snapshot found, will build image...")
+        snapshot_id = await self._ensure_base_snapshot()
         
         # Start an instance
         print(f"Starting instance from snapshot {snapshot_id}...")
@@ -279,7 +272,7 @@ class MorphConfig:
             if not mitm_success:
                 print("Warning: mitmproxy inject may not have completed successfully")
             else:
-                ("mitmproxy inject successful")
+                print("mitmproxy inject successful")
             
             # Verify the container is still running after mitmdump
             check_result = await instance.aexec(f"docker ps --filter name={container_name} --format '{{{{.Status}}}}'")
@@ -300,11 +293,13 @@ class MorphConfig:
         except Exception as e:
             # If an error occurs and cleanup_on_error is False, don't stop the instance
             print(f"Error occurred: {str(e)}")
-            print(f"Instance ID: {instance.id} - Container: {container_name}")
+            print(f"Instance ID: {instance.id}")
             if not cleanup_on_error:
                 print(f"DEBUG MODE: Keeping instance '{instance.id}' running for debugging")
+                # Create a placeholder container name for debugging
+                debug_container_name = f"debug-container-{uuid.uuid4().hex[:8]}"
                 # Just yield the value so it can be used for debugging
-                yield MorphCloudValue(instance=instance, container_name=container_name)
+                yield MorphCloudValue(instance=instance, container_name=debug_container_name)
                 # Exit without cleanup
                 return
             raise  # Re-raise the exception
@@ -312,9 +307,10 @@ class MorphConfig:
             # Only clean up if cleanup_on_error is True
             if cleanup_on_error:
                 try:
-                    # Attempt to stop the container if it exists
-                    await instance.aexec(f"docker stop {container_name}")
-                    await instance.aexec(f"docker rm {container_name}")
+                    # Attempt to stop the container if it exists and was defined
+                    if 'container_name' in locals():
+                        await instance.aexec(f"docker stop {container_name}")
+                        await instance.aexec(f"docker rm {container_name}")
                 except Exception as e:
                     print(f"Container cleanup error (non-critical): {str(e)}")
                     
@@ -322,11 +318,18 @@ class MorphConfig:
                 print(f"Stopping instance {instance.id}")
                 await instance.astop()
             else:
-                print(f"DEBUG MODE: Instance {instance.id} left running with container {container_name}")
+                # Use container_name if it was defined, otherwise just mention the instance
+                try:
+                    print(f"DEBUG MODE: Instance {instance.id} left running with container {container_name}")
+                except UnboundLocalError:
+                    print(f"DEBUG MODE: Instance {instance.id} left running")
     
     async def _build_swelancer_image(self, instance) -> None:
-        """Build the SWELancer Docker image on the instance"""
+        """Build the SWELancer Docker image using the known Dockerfile_x86 location"""
         print("Building SWELancer Docker image...")
+        
+        # Known path to Dockerfile_x86 (update this with the correct path)
+        expected_dockerfile_path = "SWELancer-Benchmark/Dockerfile_x86"
         
         with instance.ssh() as ssh:
             # Clone the repo
@@ -337,38 +340,49 @@ class MorphConfig:
                 print(f"Error cloning repository: {clone_result.stderr}")
                 raise RuntimeError(f"Failed to clone repository: {clone_result.stderr}")
             
-            # Get current directory
-            pwd_result = ssh.run(["pwd"])
-            home_dir = pwd_result.stdout.strip()
+            # Get current directory for absolute paths
+            home_dir = ssh.run(["pwd"]).stdout.strip()
+            dockerfile_path = f"{home_dir}/{expected_dockerfile_path}"
+            
+            # Get the directory containing the Dockerfile
+            build_dir = os.path.dirname(dockerfile_path)
+            dockerfile_name = os.path.basename(dockerfile_path)
             
             # Build the Docker image
-            print("Building Docker image (this may take a while)...")
-            build_cmd = f"""cd {home_dir}/SWELancer-Benchmark && docker buildx build -f Dockerfile_x86 --platform linux/amd64 -t {self.docker_image} . 2>&1"""
+            print(f"Building Docker image using {dockerfile_path}...")
+            build_cmd = f"""
+            cd {build_dir} && 
+            echo "==== BUILDING DOCKER IMAGE ====" &&
+            echo "Working directory: $(pwd)" &&
+            echo "Building from file: {dockerfile_name}" &&
+            ls -la &&
+            docker build -t {self.docker_image} -f {dockerfile_name} .
+            """
             
-            print(f"Running build command: {build_cmd}")
-            build_result = ssh.run(["bash", "-c", build_cmd], timeout=900)  # 15 minute timeout
+            # Run Docker build with extended timeout
+            print("Starting Docker build (may take several minutes)...")
+            build_result = ssh.run(["bash", "-c", build_cmd], timeout=1200)  # 20 minute timeout
             
             if build_result.exit_code != 0:
-                # Try alternative approach
-                print("First build attempt failed. Trying alternative approach...")
-                alt_build_cmd = f"""
-                pushd {home_dir}/SWELancer-Benchmark
-                ls -la  # Check files
-                docker buildx build -f ./Dockerfile_x86 -t {self.docker_image} .
-                popd
-                """
-                alt_result = ssh.run(["bash", "-c", alt_build_cmd], timeout=900)
-                
-                if alt_result.exit_code != 0:
-                    print("Both build attempts failed.")
-                    raise RuntimeError("Failed to build Docker image")
+                print(f"Docker build failed with exit code {build_result.exit_code}")
+                print("==== BUILD ERROR OUTPUT ====")
+                print(build_result.stderr)
+                print("==== BUILD STANDARD OUTPUT ====")
+                print(build_result.stdout)
+                raise RuntimeError("Failed to build Docker image")
+            
+            print("Docker build succeeded!")
             
             # Test the image
             print("Testing the built image...")
             test_result = ssh.run(["docker", "run", "--rm", self.docker_image, "echo", "Hello from SWE-Lancer container!"])
+            if test_result.exit_code != 0:
+                print(f"Image test failed: {test_result.stderr}")
+                raise RuntimeError("Docker image test failed")
+                
             print(f"Test output: {test_result.stdout}")
             
-            # Save images list for verification
+            # List available images
             images_result = ssh.run(["docker", "images"])
             print(f"Docker images available:\n{images_result.stdout}")
         
@@ -376,8 +390,8 @@ class MorphConfig:
         print("Creating snapshot with built Docker image...")
         snapshot = await instance.asnapshot()
         await snapshot.aset_metadata(self.swelancer_metadata)
-        print(f"Snapshot created successfully with ID: {snapshot.id}")
-    
+        print(f"Snapshot created successfully with ID: {snapshot.id} and metadata {self.swelancer_metadata}")
+
     async def _ensure_base_snapshot(self) -> str:
         """Find or create a base snapshot with Docker installed"""
         # Check for existing snapshot with our metadata + the specific Docker image
@@ -388,22 +402,14 @@ class MorphConfig:
             }
         )
         
-        if snapshots:
-            print(f"Found existing snapshot with Docker image: {self.docker_image}")
-            return snapshots[0].id
-        
         # No snapshot with this image, check for a base Docker snapshot
         snapshots = await self.client.snapshots.alist(
             metadata=self.base_snapshot_metadata
         )
-        
-        if snapshots:
-            print("Found base Docker snapshot, will pull required image")
-            snapshot_id = snapshots[0].id
-        else:
-            print("Creating new base snapshot with Docker")
-            snapshot_id = await self._create_docker_base_snapshot()
-            
+
+        print("Creating new base snapshot with Docker")
+        snapshot_id = await self._create_docker_base_snapshot()
+
         return snapshot_id
     
     async def _create_docker_base_snapshot(self) -> str:
@@ -552,10 +558,22 @@ class MorphCloudInterface(ComputerInterface):
         docker_cmd_parts.append(self.cluster_value.container_name)
         
         # Add the command with timeout handling exactly as in original
-        if timeout is None:
-            docker_cmd_parts.extend(["sh", "-c", cmd])
+        # Detect if this is a user-tool call or needs interactive bash
+        needs_login_shell = "user-tool" in cmd or "-i" in cmd or "ansible-playbook" in cmd
+        
+        if needs_login_shell:
+            # For user-tool commands, ensure we use login shell with source bashrc
+            if timeout is None:
+                docker_cmd_parts.extend(["bash", "-l", "-c", f"source ~/.bashrc && {cmd}"])
+                print(f"[SHELL-CMD] Using login shell for command: {cmd[:50]}..." if len(cmd) > 50 else cmd)
+            else:
+                docker_cmd_parts.extend(["timeout", f"{timeout}s", "bash", "-l", "-c", f"source ~/.bashrc && {cmd}"])
+                print(f"[SHELL-CMD] Using login shell with timeout for command: {cmd[:50]}..." if len(cmd) > 50 else cmd)
         else:
-            docker_cmd_parts.extend(["timeout", f"{timeout}s", "sh", "-c", cmd])
+            if timeout is None:
+                docker_cmd_parts.extend(["sh", "-c", cmd])
+            else:
+                docker_cmd_parts.extend(["timeout", f"{timeout}s", "sh", "-c", cmd])
         
         # Execute the command using a single string to ensure it's passed correctly
         # We need to properly escape the components to handle spaces, quotes, etc.
@@ -730,8 +748,8 @@ class SimpleAgentSolver(PythonCodingSolver):
         # print(f'TASK: {task}')
         morph_config = task_to_morph_config(task)
         
-        # Set debugging flag - change to False in production
-        debug_mode = True  # Set to True to keep instances running on error
+        # Set debugging flag
+        debug_mode = os.environ.get("DEBUG_MODE", "").lower() == "true"  # Use environment variable, defaults to False
         
         async with morph_config.build(cleanup_on_error=not debug_mode) as morph_value:
             yield MorphCloudInterface(cluster_value=morph_value)
@@ -840,9 +858,55 @@ class SimpleAgentSolver(PythonCodingSolver):
         # If we get here, we need to do the normal setup
         print("No issue_id snapshot found, proceeding with normal setup")
         async with self._start_computer(task) as computer:
+            # Run diagnostic checks on container before task setup
+            try:
+                print("--- PERFORMING PRE-SETUP DIAGNOSTICS ---")
+                # Check container logs to see if run.sh executed
+                container_logs = await computer.send_shell_command("docker logs $(docker ps -q)")
+                print(f"Container startup logs (excerpts): {safe_decode(container_logs.output)[:500]}...")
+                
+                # Check if run.sh created setup_done.txt
+                setup_file = await computer.send_shell_command("cat /setup_done.txt || echo 'Setup file not found'")
+                print(f"Setup done file check: {safe_decode(setup_file.output)}")
+                
+                # Check bashrc content
+                bashrc = await computer.send_shell_command("cat ~/.bashrc || echo 'Bashrc not found'")
+                bashrc_content = safe_decode(bashrc.output)
+                bashrc_first_lines = bashrc_content.split('\n')[:10]
+                print(f"Bashrc content check (first 10 lines): {bashrc_first_lines}")
+                
+                # Check for app directory
+                app_dir = await computer.send_shell_command("ls -la /app || echo 'App directory not found'")
+                print(f"App directory check: {safe_decode(app_dir.output)}")
+                
+                # Check if Dockerfile entry point / CMD is being honored
+                processes = await computer.send_shell_command("ps aux | grep run.sh || echo 'run.sh process not found'")
+                print(f"run.sh process check: {safe_decode(processes.output)}")
+                
+                print("--- END PRE-SETUP DIAGNOSTICS ---")
+            except Exception as e:
+                print(f"Diagnostic checks failed: {e}")
+                
             # Run the task setup
             try:
+                print("Running task.setup...")
                 await task.setup(computer)
+                print("Task setup completed successfully!")
+                
+                # Post-setup diagnostics
+                print("--- PERFORMING POST-SETUP DIAGNOSTICS ---")
+                # Check if setup_done.txt was created during setup
+                setup_done_after = await computer.send_shell_command("cat /setup_done.txt || echo 'Setup file not found after task.setup'")
+                print(f"Setup done file after task.setup: {safe_decode(setup_done_after.output)}")
+                
+                # Check if bashrc contains aliases after setup
+                bashrc_alias = await computer.send_shell_command("grep alias ~/.bashrc || echo 'No aliases in bashrc after setup'")
+                print(f"Bashrc aliases after setup: {safe_decode(bashrc_alias.output)}")
+                
+                # Check if directory structure is correct after setup
+                dir_after = await computer.send_shell_command("ls -la /app/expensify || echo 'Expensify dir not found after setup'")
+                print(f"Expensify directory after setup: {safe_decode(dir_after.output)[:200]}...")
+                print("--- END POST-SETUP DIAGNOSTICS ---")
                 
                 # Create a snapshot after setup only if successful
                 if isinstance(computer, MorphCloudInterface) and issue_id:
@@ -875,8 +939,8 @@ class SimpleAgentSolver(PythonCodingSolver):
 
     @override
     async def run(self, task: ComputerTask) -> AsyncGenerator[Step | FinalResult, None]:
-        print(f"{COLORS['GREEN']}Running with MorphCloud!{COLORS['RESET']}")
         try:
+            print(f"{COLORS['GREEN']}Running with MorphCloud!{COLORS['RESET']}")
             async with self._with_cached_setup(task) as computer:
 
                 print(f"{COLORS['GREEN']}Agent Loop Started!{COLORS['RESET']}")
@@ -888,18 +952,18 @@ class SimpleAgentSolver(PythonCodingSolver):
                         "content": str(prompt_message["content"]) # type: ignore
                     })
                 messages.append({"role": "user", "content": """The repository is cloned in your CWD. You must send Python code in backticks in each response to me, and I will execute the code and send you back the result, for example:
-                                                                       
+                                                                   
 ```python
 import os
 print(os.listdir())
 ```
 
 You can include other content in your message, as long as it has the Python code block. You must only submit one code block per message.
-                                 
-The python code block is your means of interactign with the environment; write Python code to view files, edit files, and run commands. Do not leave any steps incomplete. You must implement all fixes yourself.
-                                                                       
+                             
+The python code block is your means of interacting with the environment; write Python code to view files, edit files, and run commands. Do not leave any steps incomplete. You must implement all fixes yourself.
+                                                                   
 When you are done, send "DONE" (and nothing else - you don't need a python code block), and we will grade your submission.
-                                 
+                             
 Please note that the Python code is not a Jupyter notebook; you must write a full Python script each time, including imports, and printing things if you want to see the output.
 """})
                 max_turns = 30
@@ -908,32 +972,50 @@ Please note that the Python code is not a Jupyter notebook; you must write a ful
                 loop_exit_reason = "Reached maximum number of turns"
 
                 for remaining_turns in range(max_turns, 0, -1):
-                    model_response = get_model_response(messages)
+                    model_response = await get_model_response(messages)
                     print(model_response)
 
                     messages.append({"role": "assistant", "content": model_response})
 
                     execution_output = None
 
-                    # Check if model is done
-                    if model_response.strip().lower() == "done":
-                        print("Breaking because model is done!")
-                        loop_exit_reason = "Model explicitly finished by sending 'DONE'"
-
-                        break
-
                     # Check for user-tool calls
                     if "<user-tool>" in model_response:
-                        print('User tool called.')
+                        print('[USER-TOOL] User tool execution started')
+                        
+                        # Ensure user_tool directory exists with proper permissions
+                        print('[USER-TOOL] Creating output directory')
+                        mkdir_result = await computer.send_shell_command("mkdir -p /app/expensify/user_tool && chmod 777 /app/expensify/user_tool")
+                        print(f'[USER-TOOL] Directory setup result: {mkdir_result.exit_code}')
+                        
+                        # Verify directory exists
+                        dir_check = await computer.send_shell_command("ls -la /app/expensify/user_tool || echo 'Directory not found'")
+                        print(f'[USER-TOOL] Directory check: {safe_decode(dir_check.output)[:100]}...')
+                        
+                        # Extract tests as usual
+                        print('[USER-TOOL] Extracting test files')
                         await computer.check_shell_command("unzip -q -P 'secretpasswordhere' /app/tests.zip -d /app/tests")
-                        execution_output = await computer.check_shell_command("bash -c -i 'user-tool'")
-                        print('User tool ran, with output:')
-                        # print(execution_output)
+                        
+                        # Run ansible-playbook command directly
+                        # We rely on send_shell_command to handle login shell and sourcing .bashrc
+                        issue_id = task.environment.get("ISSUE_ID", "")
+                        print(f'[USER-TOOL] Running ansible-playbook with ISSUE_ID={issue_id}')
+                        user_tool_cmd = f"ISSUE_ID=\"{issue_id}\" ansible-playbook -i 'localhost,' --connection=local /app/tests/run_user_tool.yml"
+                        user_tool_result = await computer.send_shell_command(user_tool_cmd)
+                        print(f'[USER-TOOL] Ansible-playbook exit code: {user_tool_result.exit_code}')
+                        
+                        # Check if output was generated
+                        output_check = await computer.send_shell_command("ls -la /app/expensify/user_tool/ || echo 'No output found'")
+                        print(f'[USER-TOOL] Output check: {safe_decode(output_check.output)[:100]}...')
+                        
+                        # Standard response 
+                        print('[USER-TOOL] User tool execution completed')
                         execution_output = 'User tool output is in /app/expensify/user_tool'
-                        await computer.send_shell_command(
-                            "rm -rf /app/tests"
-                        )
-                        await computer.send_shell_command("rm -rf /app/tests")
+                        
+                        # Cleanup
+                        print('[USER-TOOL] Cleaning up test files')
+                        clean_result = await computer.send_shell_command("rm -rf /app/tests")
+                        print(f'[USER-TOOL] Cleanup result: {clean_result.exit_code}')
                     else:
                         # Extract Python code from the model response
                         python_blocks = re.findall(r"```python\s*\n(.*?)\n```", model_response, re.DOTALL)
@@ -949,8 +1031,12 @@ Please note that the Python code is not a Jupyter notebook; you must write a ful
 
                         execution_output = await computer.send_shell_command(f"python -c {shlex.quote(code)}")
                         execution_output = safe_decode(execution_output.output)
+                    
+                    if model_response.lower() == "done":
+                        print("Breaking because model is done!")
+                        break
 
-                    # print(execution_output)
+                    print(execution_output)
 
                     # Append the code and its output to the messages
                     messages.append({
@@ -964,8 +1050,7 @@ Please note that the Python code is not a Jupyter notebook; you must write a ful
                 yield FinalResultSuccessful(grade=grade)
         except Exception as e:
             print(f"Error: {e}")
-            traceback_str = traceback.format_exc()
             yield FinalResultSuccessful(
-            grade=Grade(score=0, grader_log=f"Grading failed with error: {str(e)}")
-        )
+                grade=Grade(score=0, grader_log=f"Grading failed with error: {str(e)}")
+            )
 
