@@ -272,7 +272,7 @@ class MorphConfig:
             if not mitm_success:
                 print("Warning: mitmproxy inject may not have completed successfully")
             else:
-                print("mitmproxy inject successful")
+                ("mitmproxy inject successful")
             
             # Verify the container is still running after mitmdump
             check_result = await instance.aexec(f"docker ps --filter name={container_name} --format '{{{{.Status}}}}'")
